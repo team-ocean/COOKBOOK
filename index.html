@@ -239,6 +239,15 @@ input {
   box-shadow: 0 2px 6px rgba(0,0,0,.07);
 }
 
+.control-button:hover:not(:disabled) {
+  background: #fff;
+}
+
+.control-button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
 .page-status {
   min-width: 104px;
   text-align: center;
@@ -260,9 +269,21 @@ input {
 
 /*
   Phone layout:
-  show one complete PDF page rather than two tiny pages.
+  show one complete PDF page rather than two pages.
 */
 @media (max-width: 600px) {
+  .spread {
+    grid-template-columns: var(--page-width);
+  }
+
+  .pdf-page.right {
+    display: none;
+  }
+
+  .pdf-page.left {
+    border-right: 0;
+  }
+
   .controls {
     min-height: 38px;
     gap: 3px;
@@ -373,7 +394,7 @@ input {
       <h1>Bornö Cookbook</h1>
 
       <p id="loadingText">
-        Loading 
+        Loading
         <code>BornoCookbook.pdf</code>
       </p>
 
@@ -471,9 +492,8 @@ input {
 /*
   Put BornoCookbook.pdf beside this HTML file.
 
-  PDF.js is loaded from a CDN. For a fully offline version,
-  download pdf.min.mjs and pdf.worker.min.mjs and change
-  both URLs below.
+  PDF.js uses range requests and loads only the pages
+  currently being displayed.
 */
 
 import * as pdfjsLib from
@@ -484,6 +504,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 
 const DEFAULT_PDF_FILE = "./BornoCookbook.pdf";
 const PHONE_BREAKPOINT = 600;
+const RANGE_CHUNK_SIZE = 262144;
 
 const stage =
   document.getElementById("bookStage");
@@ -539,12 +560,12 @@ const goButton =
 let pdfDocument = null;
 let firstPageInSpread = 1;
 let renderGeneration = 0;
-let pdfObjectUrl = "";
 let resizeTimer = 0;
+let currentPagesPerSpread = null;
 
 /*
   Default A4 height-to-width ratio.
-  This is replaced with the real ratio from the loaded PDF.
+  This is replaced by the real PDF page ratio.
 */
 let pdfHeightToWidthRatio = 297 / 210;
 
@@ -706,13 +727,6 @@ function setLoadingMessage(
   loadingPanel.hidden = false;
 }
 
-function clearPdfObjectUrl() {
-  if (pdfObjectUrl) {
-    URL.revokeObjectURL(pdfObjectUrl);
-    pdfObjectUrl = "";
-  }
-}
-
 function updateControls() {
   const hasPdf =
     Boolean(pdfDocument);
@@ -810,6 +824,9 @@ function clearCanvas(
     canvas.height
   );
 
+  canvas.width = 1;
+  canvas.height = 1;
+
   setPageState(
     pageElement,
     "blank"
@@ -850,6 +867,10 @@ async function renderPdfPage(
     `PDF page ${pageNumber}`
   );
 
+  /*
+    getPage requests only the data needed for this page
+    when range loading is supported.
+  */
   const page =
     await pdfDocument.getPage(
       pageNumber
@@ -969,6 +990,9 @@ async function renderSpread() {
   const pagesPerSpread =
     getPagesPerSpread();
 
+  currentPagesPerSpread =
+    pagesPerSpread;
+
   updateControls();
 
   try {
@@ -978,6 +1002,10 @@ async function renderSpread() {
         rightPage
       );
 
+      /*
+        Phone:
+        request and render only one PDF page.
+      */
       await renderPdfPage(
         firstPageInSpread,
         leftCanvas,
@@ -985,6 +1013,10 @@ async function renderSpread() {
         generation
       );
     } else {
+      /*
+        Laptop/desktop:
+        request and render only the current two pages.
+      */
       await Promise.all([
         renderPdfPage(
           firstPageInSpread,
@@ -1047,81 +1079,6 @@ function showSpreadStartingAt(
   renderSpread();
 }
 
-async function loadPdfBytes(
-  bytes,
-  name
-) {
-  setLoadingMessage(
-    `Loading <strong>${name}</strong>…`
-  );
-
-  renderGeneration += 1;
-
-  if (pdfDocument) {
-    try {
-      await pdfDocument.destroy();
-    } catch (error) {
-      console.warn(
-        "The previous PDF could not be destroyed cleanly.",
-        error
-      );
-    }
-  }
-
-  clearPdfObjectUrl();
-
-  const originalBytes =
-    new Uint8Array(bytes);
-
-  pdfObjectUrl =
-    URL.createObjectURL(
-      new Blob(
-        [originalBytes],
-        {
-          type:
-            "application/pdf"
-        }
-      )
-    );
-
-  const loadingTask =
-    pdfjsLib.getDocument({
-      data:
-        originalBytes.slice()
-    });
-
-  pdfDocument =
-    await loadingTask.promise;
-
-  const firstPage =
-    await pdfDocument.getPage(1);
-
-  const firstViewport =
-    firstPage.getViewport({
-      scale: 1
-    });
-
-  pdfHeightToWidthRatio =
-    firstViewport.height /
-    firstViewport.width;
-
-  document.documentElement
-    .style
-    .setProperty(
-      "--page-ratio",
-      `${firstViewport.width} / ${firstViewport.height}`
-    );
-
-  firstPageInSpread = 1;
-
-  loadingPanel.hidden = true;
-
-  fitPagesToScreen();
-  updateControls();
-
-  await renderSpread();
-}
-
 async function loadDefaultPdf() {
   try {
     const pdfFilename =
@@ -1135,12 +1092,20 @@ async function loadDefaultPdf() {
 
     resetLoadingProgress();
 
+    /*
+      Range loading is enabled.
+
+      disableStream: true and disableAutoFetch: true stop
+      PDF.js from continuing to download the complete PDF
+      automatically after the visible pages are available.
+    */
     const loadingTask =
       pdfjsLib.getDocument({
         url: DEFAULT_PDF_FILE,
         disableRange: false,
-        disableStream: false,
-        rangeChunkSize: 262144
+        disableStream: true,
+        disableAutoFetch: true,
+        rangeChunkSize: RANGE_CHUNK_SIZE
       });
 
     loadingTask.onProgress =
@@ -1154,6 +1119,10 @@ async function loadDefaultPdf() {
     pdfDocument =
       await loadingTask.promise;
 
+    /*
+      Obtain the first page dimensions without rendering
+      the rest of the document.
+    */
     const firstPage =
       await pdfDocument.getPage(1);
 
@@ -1178,6 +1147,10 @@ async function loadDefaultPdf() {
     fitPagesToScreen();
     updateControls();
 
+    /*
+      Render only pages 1–2 on laptop/desktop,
+      or page 1 on a phone.
+    */
     await renderSpread();
 
     finishLoadingProgress();
@@ -1209,7 +1182,8 @@ async function loadDefaultPdf() {
     progressLabel.textContent = "Loading failed";
 
     setLoadingMessage(
-      `The file <code>${pdfFilename}</code> could not be loaded.<br>` 
+      `The file <code>${pdfFilename}</code> could not be loaded.<br>`,
+      true
     );
 
     updateControls();
@@ -1351,9 +1325,23 @@ window.addEventListener(
           fitPagesToScreen();
 
           if (pdfDocument) {
-            showSpreadStartingAt(
-              firstPageInSpread
-            );
+            const newPagesPerSpread =
+              getPagesPerSpread();
+
+            /*
+              Preserve the current page when switching
+              between phone and laptop layouts.
+            */
+            if (
+              currentPagesPerSpread !==
+              newPagesPerSpread
+            ) {
+              showSpreadStartingAt(
+                firstPageInSpread
+              );
+            } else {
+              renderSpread();
+            }
           }
         },
         180
@@ -1385,11 +1373,6 @@ window.addEventListener(
         250
       );
   }
-);
-
-window.addEventListener(
-  "beforeunload",
-  clearPdfObjectUrl
 );
 
 fitPagesToScreen();
