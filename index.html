@@ -1209,10 +1209,7 @@ async function loadDefaultPdf() {
     progressLabel.textContent = "Loading failed";
 
     setLoadingMessage(
-      `The file <code>${pdfFilename}</code> could not be loaded.<br>` +
-      "Make sure the PDF is beside this HTML file and that the filename " +
-      "matches exactly.",
-      true
+      `The file <code>${pdfFilename}</code> could not be loaded.<br>` 
     );
 
     updateControls();
