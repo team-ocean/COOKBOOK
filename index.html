@@ -64,7 +64,7 @@ input {
   position: relative;
   display: grid;
   place-items: center;
-  padding: 10 12px 4px;
+  padding: 10px 12px 4px;
   overflow: hidden;
 }
 
@@ -170,6 +170,49 @@ input {
   border-radius: 4px;
 }
 
+.loading-progress {
+  margin-top: 18px;
+}
+
+.progress-track {
+  width: 100%;
+  height: 12px;
+  overflow: hidden;
+  border: 1px solid #8f8968;
+  border-radius: 999px;
+  background: #efedcf;
+}
+
+.progress-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: #8f8968;
+  transition: width .15s ease;
+}
+
+.progress-label {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.progress-track.is-indeterminate .progress-fill {
+  width: 35%;
+  animation: loading-slide 1.1s linear infinite;
+}
+
+@keyframes loading-slide {
+  from {
+    transform: translateX(-120%);
+  }
+
+  to {
+    transform: translateX(320%);
+  }
+}
+
 .error-message {
   color: #8d241d !important;
 }
@@ -241,7 +284,6 @@ input {
     padding: 4px;
     font-size: 9px;
   }
-}
 
   .loading-panel {
     width: calc(100vw - 24px);
@@ -334,6 +376,30 @@ input {
         Loading
         <code>BornoCookbook.pdf</code>
       </p>
+
+      <div class="loading-progress">
+        <div
+          class="progress-track"
+          id="progressTrack"
+          role="progressbar"
+          aria-label="PDF loading progress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <div
+            class="progress-fill"
+            id="progressFill"
+          ></div>
+        </div>
+
+        <div
+          class="progress-label"
+          id="progressLabel"
+        >
+          0%
+        </div>
+      </div>
     </section>
 
   </main>
@@ -427,6 +493,15 @@ const loadingPanel =
 
 const loadingText =
   document.getElementById("loadingText");
+
+const progressTrack =
+  document.getElementById("progressTrack");
+
+const progressFill =
+  document.getElementById("progressFill");
+
+const progressLabel =
+  document.getElementById("progressLabel");
 
 const leftPage =
   document.getElementById("leftPage");
@@ -526,6 +601,96 @@ function fitPagesToScreen() {
     "--page-width",
     `${Math.floor(fittedWidth)}px`
   );
+}
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 MB";
+  }
+
+  const megabytes =
+    bytes / (1024 * 1024);
+
+  return `${megabytes.toFixed(1)} MB`;
+}
+
+function resetLoadingProgress() {
+  progressTrack.classList.remove(
+    "is-indeterminate"
+  );
+
+  progressTrack.setAttribute(
+    "aria-valuenow",
+    "0"
+  );
+
+  progressFill.style.width = "0%";
+  progressFill.style.transform = "none";
+  progressLabel.textContent = "0%";
+}
+
+function updateLoadingProgress(
+  loaded,
+  total
+) {
+  if (
+    Number.isFinite(total) &&
+    total > 0
+  ) {
+    const percentage =
+      Math.min(
+        100,
+        Math.round(
+          (loaded / total) * 100
+        )
+      );
+
+    progressTrack.classList.remove(
+      "is-indeterminate"
+    );
+
+    progressFill.style.transform = "none";
+
+    progressTrack.setAttribute(
+      "aria-valuenow",
+      String(percentage)
+    );
+
+    progressFill.style.width =
+      `${percentage}%`;
+
+    progressLabel.textContent =
+      `${percentage}% · ` +
+      `${formatFileSize(loaded)} of ` +
+      `${formatFileSize(total)}`;
+  } else {
+    progressTrack.classList.add(
+      "is-indeterminate"
+    );
+
+    progressTrack.removeAttribute(
+      "aria-valuenow"
+    );
+
+    progressLabel.textContent =
+      `${formatFileSize(loaded)} loaded`;
+  }
+}
+
+function finishLoadingProgress() {
+  progressTrack.classList.remove(
+    "is-indeterminate"
+  );
+
+  progressFill.style.transform = "none";
+
+  progressTrack.setAttribute(
+    "aria-valuenow",
+    "100"
+  );
+
+  progressFill.style.width = "100%";
+  progressLabel.textContent = "100%";
 }
 
 function setLoadingMessage(
@@ -928,10 +1093,6 @@ async function loadPdfBytes(
   pdfDocument =
     await loadingTask.promise;
 
-  /*
-    Read the first PDF page so the viewer uses
-    the PDF's actual width-to-height ratio.
-  */
   const firstPage =
     await pdfDocument.getPage(1);
 
@@ -963,26 +1124,71 @@ async function loadPdfBytes(
 
 async function loadDefaultPdf() {
   try {
-    const response =
-      await fetch(
-        DEFAULT_PDF_FILE
-      );
-
-    if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status}`
-      );
-    }
-
-    const bytes =
-      await response.arrayBuffer();
-
-    await loadPdfBytes(
-      bytes,
+    const pdfFilename =
       DEFAULT_PDF_FILE
         .split("/")
-        .pop()
+        .pop();
+
+    setLoadingMessage(
+      `Loading <strong>${pdfFilename}</strong>…`
     );
+
+    resetLoadingProgress();
+
+    const loadingTask =
+      pdfjsLib.getDocument({
+        url: DEFAULT_PDF_FILE,
+        disableRange: false,
+        disableStream: false,
+        rangeChunkSize: 262144
+      });
+
+    loadingTask.onProgress =
+      progressData => {
+        updateLoadingProgress(
+          progressData.loaded,
+          progressData.total
+        );
+      };
+
+    pdfDocument =
+      await loadingTask.promise;
+
+    const firstPage =
+      await pdfDocument.getPage(1);
+
+    const firstViewport =
+      firstPage.getViewport({
+        scale: 1
+      });
+
+    pdfHeightToWidthRatio =
+      firstViewport.height /
+      firstViewport.width;
+
+    document.documentElement
+      .style
+      .setProperty(
+        "--page-ratio",
+        `${firstViewport.width} / ${firstViewport.height}`
+      );
+
+    firstPageInSpread = 1;
+
+    fitPagesToScreen();
+    updateControls();
+
+    await renderSpread();
+
+    finishLoadingProgress();
+
+    window.setTimeout(
+      () => {
+        loadingPanel.hidden = true;
+      },
+      200
+    );
+
   } catch (error) {
     console.warn(
       "The default PDF could not be loaded.",
@@ -994,10 +1200,18 @@ async function loadDefaultPdf() {
         .split("/")
         .pop();
 
+    progressTrack.classList.remove(
+      "is-indeterminate"
+    );
+
+    progressFill.style.transform = "none";
+    progressFill.style.width = "0%";
+    progressLabel.textContent = "Loading failed";
+
     setLoadingMessage(
       `The file <code>${pdfFilename}</code> could not be loaded.<br>` +
       "Make sure the PDF is beside this HTML file and that the filename " +
-      "matches exactly. Open the folder through a local web server.",
+      "matches exactly.",
       true
     );
 
